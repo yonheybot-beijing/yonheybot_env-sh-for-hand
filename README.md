@@ -1,6 +1,6 @@
 # 机械臂运行环境一键配置
 
-支持 Ubuntu 20.04 / 22.04 / 24.04 系统，一键安装 ROS + Python + NumPy 环境，自动适配系统版本和网络环境。
+支持 Ubuntu 20.04 / 22.04 / 24.04 系统，一键安装完整的机械臂开发环境，自动适配系统版本和网络环境。
 
 ## 一键安装
 
@@ -14,20 +14,18 @@ bash <(curl -sSL https://raw.githubusercontent.com/<用户名>/<仓库>/main/ins
 bash <(curl -sSL https://gitee.com/<用户名>/<仓库>/raw/main/install.sh)
 ```
 
-执行后脚本会自动检测 Ubuntu 版本并开始安装，中间需选择：
-- **1** — 国内环境（清华/阿里云镜像，速度快）
-- **2** — 国际环境（官方源）
-
-其余全程自动完成。
+执行后选择网络环境（国内 1 / 国际 2），其余全程自动完成。
 
 ## 安装内容
 
-| 软件 | 说明 |
-|------|------|
-| ROS | 根据 Ubuntu 版本自动匹配对应发行版 |
-| Python3 | 安装系统匹配版本 |
-| NumPy | 通过 pip 安装 |
-| rosdep | 自动初始化（国内环境替换镜像源） |
+| 类别 | 具体内容 |
+|------|----------|
+| ROS | desktop + ros2-control + MoveIt + TF2 + RViz + rosbag 等扩展包 |
+| 视觉库 | OpenCV + PCL + cv_bridge + image_transport |
+| 数学库 | Eigen + Boost + Armadillo + LAPACK + SciPy |
+| Python | NumPy + SciPy + Matplotlib + OpenCV + Transform3D |
+| 构建工具 | cmake + colcon + rosdep + git |
+| 硬件驱动 | libusb + udev + OpenNI + DC1394 |
 
 ## 版本对应关系
 
@@ -43,4 +41,16 @@ bash <(curl -sSL https://gitee.com/<用户名>/<仓库>/raw/main/install.sh)
 source ~/.bashrc
 ```
 
-环境变量立即生效，即可使用 `roscore`、`ros2` 等命令。
+即可使用 `ros2`、`rviz2`、`colcon` 等命令。
+
+## 查询目标环境依赖
+
+在已配好环境的机器上运行：
+
+```bash
+dpkg -l | awk '/^ii/{print $2}' > env_info.txt
+pip3 freeze >> env_info.txt 2>/dev/null
+lsb_release -a >> env_info.txt 2>/dev/null
+```
+
+将 `env_info.txt` 提供给脚本维护者即可同步依赖。
