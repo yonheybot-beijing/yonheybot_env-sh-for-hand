@@ -68,7 +68,7 @@ select_mirror() {
     echo -e "${CYAN}  请选择网络环境${NC}"
     echo -e "${CYAN}============================================${NC}"
     echo ""
-    echo "  1) 国内环境 (清华镜像 + 阿里云镜像)"
+    echo "  1) 国内环境 (中科大/清华/阿里云 多源回退)"
     echo "  2) 国际环境 (官方源)"
     echo ""
 
@@ -77,17 +77,28 @@ select_mirror() {
         case "$mirror_choice" in
             1)
                 USE_MIRROR=true
-                MIRROR_URL="https://mirrors.tuna.tsinghua.edu.cn"
+                # ROS 源列表（按优先级，第一个通的会被使用）
+                ROS_MIRRORS=(
+                    "https://mirrors.ustc.edu.cn"
+                    "https://mirrors.tuna.tsinghua.edu.cn"
+                )
+                # Ubuntu apt 源
                 UBUNTU_MIRROR="http://mirrors.aliyun.com"
-                PIP_INDEX="https://pypi.tuna.tsinghua.edu.cn/simple/"
-                log_info "使用国内镜像源"
+                # pip 源列表（按优先级回退）
+                PIP_MIRRORS=(
+                    "https://mirrors.ustc.edu.cn/pypi/simple/"
+                    "https://pypi.tuna.tsinghua.edu.cn/simple/"
+                    "https://mirrors.aliyun.com/pypi/simple/"
+                    "https://pypi.douban.com/simple/"
+                )
+                log_info "使用国内镜像源（多源回退）"
                 break
                 ;;
             2)
                 USE_MIRROR=false
-                MIRROR_URL="http://packages.ros.org"
+                ROS_MIRRORS=("http://packages.ros.org")
                 UBUNTU_MIRROR="http://archive.ubuntu.com"
-                PIP_INDEX="https://pypi.org/simple/"
+                PIP_MIRRORS=("https://pypi.org/simple/")
                 log_info "使用国际官方源"
                 break
                 ;;
@@ -115,18 +126,62 @@ install_ros() {
 
     $SUDO apt install -y curl gnupg2 lsb-release
 
-    # 添加 ROS GPG 密钥和源
-    $SUDO rm -f /usr/share/keyrings/ros-archive-keyring.gpg
-    if [ "$USE_MIRROR" = true ]; then
-        ROS_SOURCE="deb ${MIRROR_URL}/ros${ROS_VERSION}/ubuntu ${UBUNTU_CODENAME} main"
-        curl -sSL https://mirrors.tuna.tsinghua.edu.cn/ros/ros.key | $SUDO gpg --dearmor --batch --yes -o /usr/share/keyrings/ros-archive-keyring.gpg 2>/dev/null
-    else
-        ROS_SOURCE="deb http://packages.ros.org/ros${ROS_VERSION}/ubuntu ${UBUNTU_CODENAME} main"
-        curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key | $SUDO gpg --dearmor --batch --yes -o /usr/share/keyrings/ros-archive-keyring.gpg 2>/dev/null
+    # 添加 ROS GPG 密钥和源（多源尝试 + [trusted=yes] 兜底）
+    # 先清理所有旧 ROS 源，避免残留配置干扰
+    $SUDO rm -f /etc/apt/sources.list.d/ros*.list /etc/apt/sources.list.d/ros*.sources
+    if [ -f /etc/apt/trusted.gpg ]; then
+        $SUDO mv /etc/apt/trusted.gpg /etc/apt/trusted.gpg.bak 2>/dev/null || true
     fi
+    $SUDO rm -f /usr/share/keyrings/ros-archive-keyring.gpg
 
-    echo "$ROS_SOURCE" | $SUDO tee /etc/apt/sources.list.d/ros-latest.list > /dev/null
-    $SUDO apt update -y
+    ARCH=$(dpkg --print-architecture)
+    GPG_OK=false
+
+    # 尝试下载 GPG 密钥（多个 key 源回退）
+    log_info "下载 ROS GPG 密钥..."
+    for key_url in \
+        "https://mirrors.ustc.edu.cn/ros/ros.key" \
+        "https://mirrors.tuna.tsinghua.edu.cn/ros/ros.key" \
+        "https://raw.githubusercontent.com/ros/rosdistro/master/ros.key"; do
+        log_info "尝试: ${key_url}"
+        if curl -sSL --connect-timeout 3 --max-time 8 "$key_url" 2>/dev/null \
+            | $SUDO gpg --dearmor --batch --yes -o /usr/share/keyrings/ros-archive-keyring.gpg 2>/dev/null; then
+            GPG_OK=true
+            log_info "GPG 密钥下载成功: ${key_url}"
+            break
+        fi
+    done
+
+    # 尝试每个 ROS 镜像源，找到能用的
+    ROS_SOURCE_OK=false
+    for mirror in "${ROS_MIRRORS[@]}"; do
+        ROS_URL="${mirror}/ros${ROS_VERSION}/ubuntu"
+        log_info "尝试 ROS 源: ${ROS_URL}"
+
+        if [ "$GPG_OK" = true ]; then
+            echo "deb [arch=${ARCH} signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] ${ROS_URL} ${UBUNTU_CODENAME} main" \
+                | $SUDO tee /etc/apt/sources.list.d/ros-latest.list > /dev/null
+        else
+            echo "deb [arch=${ARCH} trusted=yes] ${ROS_URL} ${UBUNTU_CODENAME} main" \
+                | $SUDO tee /etc/apt/sources.list.d/ros-latest.list > /dev/null
+        fi
+
+        if $SUDO apt update -y 2>/dev/null; then
+            ROS_SOURCE_OK=true
+            log_info "ROS 源可用: ${ROS_URL}"
+            break
+        fi
+        log_warn "ROS 源不可达: ${ROS_URL}，尝试下一个..."
+    done
+
+    if [ "$ROS_SOURCE_OK" = false ]; then
+        log_warn "所有 ROS 镜像源均不可达，使用 [trusted=yes] + 最后一个源兜底"
+        # 用最后一个镜像 + trusted=yes 再试
+        ROS_URL="${ROS_MIRRORS[-1]}/ros${ROS_VERSION}/ubuntu"
+        echo "deb [arch=${ARCH} trusted=yes] ${ROS_URL} ${UBUNTU_CODENAME} main" \
+            | $SUDO tee /etc/apt/sources.list.d/ros-latest.list > /dev/null
+        $SUDO apt update -y || log_warn "apt update 失败，继续尝试安装..."
+    fi
 
     # ROS 基础包
     if [ "$ROS_VERSION" = "1" ]; then
@@ -207,7 +262,6 @@ install_ros() {
             "ros-${ROS_DISTRO}-rqt-service-caller"
             "ros-${ROS_DISTRO}-rqt-shell"
             "ros-${ROS_DISTRO}-rqt-srv"
-            "ros-${ROS_DISTRO}-rqt-top"
             "ros-${ROS_DISTRO}-rqt-topic"
             "ros-${ROS_DISTRO}-rqt-msg"
             "ros-${ROS_DISTRO}-rqt-action"
@@ -311,7 +365,18 @@ install_ros() {
             "ros-${ROS_DISTRO}-v4l2-camera"
             "ros-${ROS_DISTRO}-turtlesim"
         )
-        $SUDO apt install -y "${ROS_EXTRA[@]}" 2>/dev/null || log_warn "部分 ROS 扩展包安装失败，继续..."
+        # 先批量安装，失败再逐包排查
+        if ! $SUDO apt install -y "${ROS_EXTRA[@]}" 2>/dev/null; then
+            log_warn "批量安装部分失败，逐包重试..."
+            FAIL_COUNT=0
+            for pkg in "${ROS_EXTRA[@]}"; do
+                if ! $SUDO apt install -y "$pkg" 2>/dev/null; then
+                    log_warn "  不可用: ${pkg}"
+                    ((FAIL_COUNT++))
+                fi
+            done
+            log_warn "${FAIL_COUNT} 个 ROS 扩展包在当前源中不可用"
+        fi
     fi
 
     log_info "ROS ${ROS_DISTRO} 安装完成"
@@ -561,36 +626,35 @@ install_python() {
     $SUDO apt install -y "${PYTHON_APT[@]}" 2>/dev/null || log_warn "部分 Python 包安装失败，继续..."
 
     log_step "安装 pip 包..."
-    pip3 install --upgrade pip -i "$PIP_INDEX" 2>/dev/null || true
 
-    PIP_PKGS=(
-        # 科学计算
-        numpy
-        scipy
-        matplotlib
-        sympy
-        # 网络/通信
-        Flask
-        Werkzeug
-        websockets
-        websocket-client
-        # 工具
-        tqdm
-        sounddevice
-        vosk
-        transforms3d
-        pyserial
-        python-can
-        pyrealsense2
-        pymodbus
-        PyQt5
-        PyQt5-sip
-        Pillow
-    )
-
-    for pkg in "${PIP_PKGS[@]}"; do
-        pip3 install "$pkg" -i "$PIP_INDEX" 2>/dev/null || log_warn "pip install ${pkg} 失败"
+    # 探测可用的 pip 镜像源
+    PIP_WORKING=""
+    for idx in "${!PIP_MIRRORS[@]}"; do
+        log_info "探测 pip 源: ${PIP_MIRRORS[$idx]}"
+        if pip3 install --upgrade pip -i "${PIP_MIRRORS[$idx]}" --timeout 10 --retries 1 2>/dev/null; then
+            PIP_WORKING="${PIP_MIRRORS[$idx]}"
+            log_info "pip 源可用: ${PIP_WORKING}"
+            break
+        fi
     done
+
+    if [ -z "$PIP_WORKING" ]; then
+        log_warn "所有 pip 镜像源均不可达！pip 包将跳过"
+    else
+        PIP_PKGS=(
+            numpy scipy matplotlib sympy
+            Flask Werkzeug websockets websocket-client
+            tqdm sounddevice vosk transforms3d
+            pyserial python-can pyrealsense2 pymodbus
+            PyQt5 PyQt5-sip Pillow
+        )
+
+        for pkg in "${PIP_PKGS[@]}"; do
+            pip3 install "$pkg" -i "$PIP_WORKING" --timeout 30 --retries 2 2>/dev/null \
+                || pip3 install "$pkg" -i "${PIP_MIRRORS[0]}" --timeout 30 --retries 2 2>/dev/null \
+                || log_warn "pip install ${pkg} 失败，apt 版本可能已满足需求"
+        done
+    fi
 
     PY_VER=$(python3 --version 2>&1)
     log_info "Python 环境安装完成: ${PY_VER}"
@@ -604,13 +668,22 @@ init_rosdep() {
     if [ "$USE_MIRROR" = true ]; then
         log_info "配置 rosdep 使用国内源..."
         $SUDO mkdir -p /etc/ros/rosdep/sources.list.d
-        $SUDO curl -sSL https://mirrors.tuna.tsinghua.edu.cn/rosdistro/rosdep/20-default.list \
-            -o /etc/ros/rosdep/sources.list.d/20-default.list 2>/dev/null || \
-        $SUDO curl -sSL https://gitee.com/ohhuo/rosdistro/raw/master/rosdep/sources.list.d/20-default.list \
-            -o /etc/ros/rosdep/sources.list.d/20-default.list 2>/dev/null || true
+
+        # 多源尝试下载 rosdep sources list
+        for rosdep_url in \
+            "https://mirrors.ustc.edu.cn/rosdistro/rosdep/20-default.list" \
+            "https://mirrors.tuna.tsinghua.edu.cn/rosdistro/rosdep/20-default.list" \
+            "https://gitee.com/ohhuo/rosdistro/raw/master/rosdep/sources.list.d/20-default.list"; do
+            if $SUDO curl -sSL --connect-timeout 3 --max-time 15 "$rosdep_url" \
+                -o /etc/ros/rosdep/sources.list.d/20-default.list 2>/dev/null; then
+                log_info "rosdep 配置下载成功: ${rosdep_url}"
+                break
+            fi
+        done
+
         if [ -d /etc/ros/rosdep ]; then
             $SUDO find /etc/ros/rosdep -type f -name "*.list" -exec \
-                sed -i 's@https://raw.githubusercontent.com@https://mirrors.tuna.tsinghua.edu.cn@g' {} \; 2>/dev/null || true
+                sed -i 's@https://raw.githubusercontent.com@https://mirrors.ustc.edu.cn@g' {} \; 2>/dev/null || true
         fi
         rosdep update 2>/dev/null || log_warn "rosdep update 失败，可稍后手动执行"
     else
