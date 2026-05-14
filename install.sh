@@ -40,17 +40,14 @@ detect_os() {
         "20.04")
             ROS_DISTRO="noetic"
             ROS_VERSION="1"
-            PYTHON="python3"
             ;;
         "22.04")
             ROS_DISTRO="humble"
             ROS_VERSION="2"
-            PYTHON="python3"
             ;;
         "24.04")
             ROS_DISTRO="jazzy"
             ROS_VERSION="2"
-            PYTHON="python3"
             ;;
         *)
             log_error "不支持 Ubuntu ${UBUNTU_VERSION}，仅支持 20.04/22.04/24.04"
@@ -58,7 +55,10 @@ detect_os() {
             ;;
     esac
 
-    log_info "Ubuntu ${UBUNTU_VERSION} ${UBUNTU_CODENAME} → ROS ${ROS_DISTRO} (ROS ${ROS_VERSION})"
+    PYTHON_VER=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+    PYTHON="python3"
+
+    log_info "Ubuntu ${UBUNTU_VERSION} ${UBUNTU_CODENAME} → ROS ${ROS_DISTRO} (ROS ${ROS_VERSION}), Python ${PYTHON_VER}"
 }
 
 # ==================== 2. 选择镜像源 ====================
@@ -116,12 +116,13 @@ install_ros() {
     $SUDO apt install -y curl gnupg2 lsb-release
 
     # 添加 ROS GPG 密钥和源
+    $SUDO rm -f /usr/share/keyrings/ros-archive-keyring.gpg
     if [ "$USE_MIRROR" = true ]; then
         ROS_SOURCE="deb ${MIRROR_URL}/ros${ROS_VERSION}/ubuntu ${UBUNTU_CODENAME} main"
-        curl -sSL https://mirrors.tuna.tsinghua.edu.cn/ros/ros.key | $SUDO gpg --dearmor -o /usr/share/keyrings/ros-archive-keyring.gpg 2>/dev/null
+        curl -sSL https://mirrors.tuna.tsinghua.edu.cn/ros/ros.key | $SUDO gpg --dearmor --batch --yes -o /usr/share/keyrings/ros-archive-keyring.gpg 2>/dev/null
     else
         ROS_SOURCE="deb http://packages.ros.org/ros${ROS_VERSION}/ubuntu ${UBUNTU_CODENAME} main"
-        curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key | $SUDO gpg --dearmor -o /usr/share/keyrings/ros-archive-keyring.gpg 2>/dev/null
+        curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key | $SUDO gpg --dearmor --batch --yes -o /usr/share/keyrings/ros-archive-keyring.gpg 2>/dev/null
     fi
 
     echo "$ROS_SOURCE" | $SUDO tee /etc/apt/sources.list.d/ros-latest.list > /dev/null
@@ -324,61 +325,49 @@ install_system_libs() {
         build-essential cmake git curl wget
         g++ gcc gfortran
         pkg-config automake autoconf libtool m4 make
-        clang-format clang-format-14 cppcheck
+        clang-format cppcheck
         net-tools can-utils
         nodejs
-        # 线性代数 & 数学
         libeigen3-dev
         libblas-dev liblapack-dev
         libarmadillo-dev
         libarpack2-dev
         libsuperlu-dev
-        libsuitesparseconfig5
-        # 计算机视觉
         libopencv-dev
-        libopencv4.5-java
-        # 点云处理
         libpcl-dev
-        # 图像处理
         libjpeg-dev libjpeg8-dev libjpeg-turbo8-dev
         libpng-dev libpng-tools
         libtiff-dev
         libwebp-dev
         libopenjp2-7-dev
         libjbig-dev
-        # 视频/编解码
         libavcodec-dev libavformat-dev libavutil-dev
         libswresample-dev libswscale-dev
-        libx264-dev libx265-dev libvpx7
+        libx264-dev libx265-dev
         libtheora-dev libogg-dev
         libde265-dev libheif-dev libaom-dev
         libdav1d-dev
         libv4l-0 libv4lconvert0
         libdc1394-25 libdc1394-dev libraw1394-dev
-        # 深度学习
         libhdf5-dev libhdf5-mpi-dev libhdf5-openmpi-dev
         libnetcdf-dev libnetcdf-cxx-legacy-dev
-        # 几何/碰撞检测
         libfcl-dev libccd-dev
         liboctomap-dev
         libflann-dev
         libqhull-dev
         libassimp-dev
         libbullet-dev
-        # 序列化 & 解析
         libyaml-cpp-dev libyaml-dev
         liburdfdom-dev liburdfdom-headers-dev
         libtinyxml-dev libtinyxml2-dev
-        libconsole-bridge-dev libconsole-bridge1.0
+        libconsole-bridge-dev
         liborocos-kdl-dev
-        # 通信
         libzmq5
         libcurl4-openssl-dev libssl-dev
-        # 图形/界面
         libsdl2-dev libsdl2-2.0-0
         libgl-dev libgl1-mesa-dev libegl1-mesa-dev libgles2
         libglu1-mesa-dev
-        libglew-dev libglew2.2
+        libglew-dev
         libglfw3-dev
         libx11-dev libxext-dev libxrender-dev libxrandr-dev
         libxi-dev libxmu-dev libxpm-dev
@@ -389,15 +378,12 @@ install_system_libs() {
         libwayland-dev libxkbcommon-dev
         libfontconfig1-dev libfreetype-dev
         libxcb1-dev libxcb-render0-dev
-        # USB & 硬件
         libusb-1.0-0-dev
         libudev-dev
         libpcap0.8
-        # 数据库
         libpq-dev
         default-libmysqlclient-dev
         libsqlite3-dev
-        # GDAL / 地理信息
         libgdal-dev libgeos-dev libproj-dev
         libgeotiff-dev
         libcfitsio-dev
@@ -415,13 +401,49 @@ install_system_libs() {
         libutfcpp-dev
         libxsimd-dev
         libexpected-dev
-        libinih1
-        # 硬件驱动
-        libopenni-dev libopenni2-dev libopenni-sensor-pointclouds0
+        libopenni-dev libopenni2-dev
         openni-utils
-        # protobuf
-        libprotobuf23
     )
+
+    # 版本相关的包按 Ubuntu 版本添加
+    case "$UBUNTU_VERSION" in
+        "20.04")
+            DEV_LIBS+=(
+                libopencv4.2-java
+                libvpx6
+                libconsole-bridge0.4
+                libglew2.1
+                libprotobuf17
+                libsuitesparseconfig5
+                libinih1
+                libopenni-sensor-pointclouds0
+            )
+            ;;
+        "22.04")
+            DEV_LIBS+=(
+                libopencv4.5-java
+                libvpx7
+                libconsole-bridge1.0
+                libglew2.2
+                libprotobuf23
+                libsuitesparseconfig5
+                libinih1
+                libopenni-sensor-pointclouds0
+            )
+            ;;
+        "24.04")
+            DEV_LIBS+=(
+                libopencv4.10-java
+                libvpx8
+                libconsole-bridge1.0
+                libglew2.2
+                libprotobuf-lite25
+                libsuitesparseconfig7
+                libinih1
+                libopenni-sensor-pointclouds0
+            )
+            ;;
+    esac
 
     $SUDO apt install -y "${DEV_LIBS[@]}" 2>/dev/null || log_warn "部分开发库安装失败，继续..."
     log_info "系统开发库安装完成"
@@ -433,7 +455,7 @@ install_python() {
 
     PYTHON_APT=(
         python3 python3-pip python3-dev python3-venv
-        python3-tk python3.10-dev
+        python3-tk python${PYTHON_VER}-dev
         python3-numpy
         python3-scipy
         python3-matplotlib
@@ -470,7 +492,7 @@ install_python() {
         python3-rosdep python3-rosdep-modules
         python3-colcon-common-extensions
         python3-vcstool
-        python3-bson python3-bson-ext
+        python3-bson
         python3-pyqt5 python3-pyqt5.qtsvg python3-pyqt5.sip
         python3-pyside2.qtcore python3-pyside2.qtgui python3-pyside2.qtsvg python3-pyside2.qtwidgets
         python3-gi python3-gi-cairo
@@ -499,7 +521,6 @@ install_python() {
         python3-olefile python3-webencodings python3-html5lib python3-bs4
         python3-fonttools python3-ufolib2
         python3-unicodedata2
-        python3-distutils python3-lib2to3
         python3-distlib
         python3-keyring python3-secretstorage python3-jeepney
         python3-babel python3-babel-localedata
@@ -522,9 +543,20 @@ install_python() {
         python3-louis
         python3-pyatspi
         python3-uno
-        python3-vtk9
         python3-wadllib
     )
+
+    # distutils / lib2to3 在 Python 3.12+ 被移除
+    if [ "$UBUNTU_VERSION" != "24.04" ]; then
+        PYTHON_APT+=(python3-distutils python3-lib2to3)
+    fi
+
+    # vtk 版本随 Ubuntu 不同
+    case "$UBUNTU_VERSION" in
+        "20.04") PYTHON_APT+=(python3-vtk7) ;;
+        "22.04") PYTHON_APT+=(python3-vtk9) ;;
+        "24.04") PYTHON_APT+=(python3-vtk9) ;;
+    esac
 
     $SUDO apt install -y "${PYTHON_APT[@]}" 2>/dev/null || log_warn "部分 Python 包安装失败，继续..."
 
